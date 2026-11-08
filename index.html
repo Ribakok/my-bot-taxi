@@ -122,27 +122,43 @@
     <section class="pane active" id="pane-home">
       <div class="card summary-card" id="today-summary" style="display:none;"></div>
 
-      <div class="card">
-        <div class="card-title">Нова зміна</div>
+      <div class="card" id="start-view">
+        <div class="card-title">Почати зміну</div>
         <div class="row-2">
           <label class="field"><span class="field-label">Дата</span>
-            <input type="date" id="f-date" />
+            <input type="date" id="st-date" />
           </label>
           <label class="field"><span class="field-label">Платформа</span>
-            <select id="f-platform"></select>
+            <select id="st-platform"></select>
           </label>
         </div>
         <div class="row-2">
-          <label class="field"><span class="field-label">Початок зміни</span>
-            <input type="time" id="f-start-time" />
+          <label class="field"><span class="field-label">Час початку</span>
+            <input type="time" id="st-start-time" />
           </label>
-          <label class="field"><span class="field-label">Кінець зміни</span>
-            <input type="time" id="f-end-time" />
-          </label>
-        </div>
-        <div class="row-2">
           <label class="field"><span class="field-label">Одометр, старт (км)</span>
-            <input inputmode="decimal" placeholder="120450" id="f-start-odo" />
+            <input inputmode="decimal" placeholder="120450" id="st-start-odo" />
+          </label>
+        </div>
+        <button class="btn-primary" id="btn-start-shift">Почати зміну</button>
+        <div class="flash" id="flash-start"></div>
+      </div>
+
+      <div class="card" id="active-view" style="display:none;">
+        <div class="card-title">Зміна триває</div>
+        <div class="wallet-preview" style="display:block; margin-top:0;">
+          <div class="wallet-row"><span>Платформа</span><span id="active-platform-label" class="mono"></span></div>
+          <div class="wallet-row"><span>Початок</span><span id="active-start-label" class="mono"></span></div>
+          <div class="wallet-row"><span>Одометр, старт</span><span id="active-odo-label" class="mono"></span></div>
+        </div>
+        <button class="btn-ghost" id="btn-cancel-shift">Скасувати зміну</button>
+      </div>
+
+      <div class="card" id="finish-view" style="display:none;">
+        <div class="card-title">Завершити зміну</div>
+        <div class="row-2">
+          <label class="field"><span class="field-label">Час завершення</span>
+            <input type="time" id="f-end-time" />
           </label>
           <label class="field"><span class="field-label">Одометр, фініш (км)</span>
             <input inputmode="decimal" placeholder="120680" id="f-end-odo" />
@@ -170,7 +186,7 @@
 
         <div class="wallet-preview" id="wallet-preview" style="display:none;"></div>
 
-        <button class="btn-primary" id="btn-save-shift" disabled>Зберегти зміну</button>
+        <button class="btn-primary" id="btn-save-shift" disabled>Завершити зміну</button>
         <div class="flash" id="flash-home"></div>
       </div>
     </section>
@@ -233,7 +249,8 @@
 
       <div class="card">
         <div class="card-title">Дані</div>
-        <div class="field-hint" style="margin-bottom:10px;" id="data-count"></div>
+        <div class="field-hint" style="margin-bottom:6px;" id="data-count"></div>
+        <div class="field-hint" style="margin-bottom:10px;" id="storage-status"></div>
         <div id="reset-zone">
           <button class="btn-ghost" id="btn-reset">Скинути всі дані</button>
         </div>
@@ -312,9 +329,19 @@
   }
   function csSetItem(key, value) {
     return new Promise(function (resolve) {
-      if (tg && tg.CloudStorage) { tg.CloudStorage.setItem(key, value, function () { resolve(); }); }
-      else { localStorage.setItem(key, value); resolve(); }
+      if (tg && tg.CloudStorage) {
+        tg.CloudStorage.setItem(key, value, function (err, success) {
+          resolve(!err && success !== false);
+        });
+      } else {
+        try { localStorage.setItem(key, value); resolve(true); } catch (e) { resolve(false); }
+      }
     });
+  }
+  async function csSetItemRetry(key, value) {
+    var ok = await csSetItem(key, value);
+    if (!ok) { await new Promise(function (r) { setTimeout(r, 400); }); ok = await csSetItem(key, value); }
+    return ok;
   }
   function csGetItems(keys) {
     return new Promise(function (resolve) {
@@ -323,11 +350,19 @@
       else { var out = {}; keys.forEach(function (k) { out[k] = localStorage.getItem(k); }); resolve(out); }
     });
   }
+  function csRemoveItem(key) {
+    return new Promise(function (resolve) {
+      if (tg && tg.CloudStorage) { tg.CloudStorage.removeItem(key, function (err, success) { resolve(!err && success !== false); }); }
+      else { try { localStorage.removeItem(key); resolve(true); } catch (e) { resolve(false); } }
+    });
+  }
 
   var SETTINGS_KEY = "settings";
   var PLATFORMS_KEY = "platforms";
   var INKASATSIYA_KEY = "inkasatsiya";
   var INDEX_KEY = "shifts_index";
+  var ACTIVE_KEY = "active_shift";
+  var activeShift = null;
   function monthKey(dateISO) { return "shifts_" + dateISO.slice(0, 7); }
 
   function computeShift(input, platform, s) {
@@ -384,6 +419,9 @@
     var iRaw = await csGetItem(INKASATSIYA_KEY);
     inkasatsiya = iRaw ? JSON.parse(iRaw) : [];
 
+    var actRaw = await csGetItem(ACTIVE_KEY);
+    activeShift = actRaw ? JSON.parse(actRaw) : null;
+
     var idxRaw = await csGetItem(INDEX_KEY);
     monthIndex = idxRaw ? JSON.parse(idxRaw) : [];
     var keys = monthIndex.map(function (m) { return "shifts_" + m; });
@@ -395,7 +433,8 @@
 
     fillSettingsForm();
     populatePlatformSelect();
-    document.getElementById("f-date").value = todayISO();
+    document.getElementById("st-date").value = todayISO();
+    renderHomeState();
     renderAll();
   }
 
@@ -405,10 +444,20 @@
 
   async function addShift(record) {
     var mk = monthKey(record.date);
-    if (!shiftsByMonth[mk]) shiftsByMonth[mk] = [];
-    shiftsByMonth[mk].push(record);
-    if (monthIndex.indexOf(mk) === -1) { monthIndex.push(mk); await csSetItem(INDEX_KEY, JSON.stringify(monthIndex)); }
-    await csSetItem(mk, JSON.stringify(shiftsByMonth[mk]));
+    var prevList = (shiftsByMonth[mk] || []).slice();
+    var nextList = prevList.concat([record]);
+    var indexChanged = monthIndex.indexOf(mk) === -1;
+    var nextIndex = indexChanged ? monthIndex.concat([mk]) : monthIndex;
+
+    var ok = await csSetItemRetry(mk, JSON.stringify(nextList));
+    if (!ok) return false;
+    if (indexChanged) {
+      var idxOk = await csSetItemRetry(INDEX_KEY, JSON.stringify(nextIndex));
+      if (!idxOk) return false;
+      monthIndex = nextIndex;
+    }
+    shiftsByMonth[mk] = nextList;
+    return true;
   }
 
   async function deleteShift(id) {
@@ -430,7 +479,7 @@
 
   // ---------- form helpers ----------
   function populatePlatformSelect() {
-    var sel = document.getElementById("f-platform");
+    var sel = document.getElementById("st-platform");
     var current = sel.value;
     sel.innerHTML = platforms.map(function (p) {
       return '<option value="' + p.id + '">' + platformLabel(p) + " (" + p.commissionPercent + "%)</option>";
@@ -445,12 +494,13 @@
   }
 
   function getFormValues() {
+    if (!activeShift) return null;
     return {
-      date: document.getElementById("f-date").value || todayISO(),
-      platformId: document.getElementById("f-platform").value,
-      startTime: document.getElementById("f-start-time").value,
+      date: activeShift.date,
+      platformId: activeShift.platformId,
+      startTime: activeShift.startTime,
+      startOdo: activeShift.startOdo,
       endTime: document.getElementById("f-end-time").value,
-      startOdo: document.getElementById("f-start-odo").value,
       endOdo: document.getElementById("f-end-odo").value,
       orders: document.getElementById("f-orders").value,
       income: document.getElementById("f-income").value,
@@ -460,16 +510,37 @@
   }
 
   function updateFuelSuggestion() {
-    if (fuelTouched) return;
-    var startOdo = parseFloat(document.getElementById("f-start-odo").value) || 0;
+    if (fuelTouched || !activeShift) return;
+    var startOdo = parseFloat(activeShift.startOdo) || 0;
     var endOdo = parseFloat(document.getElementById("f-end-odo").value) || 0;
     var distance = Math.max(0, endOdo - startOdo);
     var el = document.getElementById("f-fuel");
     el.value = distance > 0 ? String(round((distance * settings.fuelConsumption) / 100, 1)) : "";
   }
 
+  function renderHomeState() {
+    var startView = document.getElementById("start-view");
+    var activeView = document.getElementById("active-view");
+    var finishView = document.getElementById("finish-view");
+    if (activeShift) {
+      startView.style.display = "none";
+      activeView.style.display = "block";
+      finishView.style.display = "block";
+      var p = platformById(activeShift.platformId);
+      document.getElementById("active-platform-label").textContent = p ? platformLabel(p) : "—";
+      document.getElementById("active-start-label").textContent = activeShift.startTime || "—";
+      document.getElementById("active-odo-label").textContent = fmt1(parseFloat(activeShift.startOdo) || 0) + " км";
+      renderHomePreview();
+    } else {
+      startView.style.display = "block";
+      activeView.style.display = "none";
+      finishView.style.display = "none";
+    }
+  }
+
   function renderHomePreview() {
     var form = getFormValues();
+    if (!form) return;
     var distance = Math.max(0, (parseFloat(form.endOdo) || 0) - (parseFloat(form.startOdo) || 0));
     var pill = document.getElementById("distance-pill");
     if (distance > 0) { pill.style.display = "inline-block"; pill.textContent = "Пробіг за зміну: " + fmt1(distance) + " км"; }
@@ -681,6 +752,14 @@
 
   function renderDataCount() {
     document.getElementById("data-count").textContent = "Усього збережено змін: " + allShifts().length;
+    var statusEl = document.getElementById("storage-status");
+    if (statusEl) {
+      var usingCloud = !!(tg && tg.CloudStorage);
+      statusEl.textContent = usingCloud
+        ? "Сховище: Telegram Cloud (синхронізується між пристроями)"
+        : "Сховище: локальне на цьому пристрої (Telegram Cloud недоступний)";
+      statusEl.style.color = usingCloud ? "var(--green)" : "var(--accent)";
+    }
     var zone = document.getElementById("reset-zone");
     if (confirmReset) {
       zone.innerHTML = '<div class="confirm-row"><span>Видалити всі зміни?</span><button class="btn-danger-sm" id="btn-reset-yes">Так, видалити</button><button class="btn-ghost-sm" id="btn-reset-no">Скасувати</button></div>';
@@ -691,7 +770,7 @@
 
   function renderAll() {
     renderHeaderAndHome();
-    renderHomePreview();
+    renderHomeState();
     renderWallet();
     renderHistory();
     renderStats();
@@ -717,16 +796,48 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    ["f-start-odo", "f-end-odo", "f-orders", "f-income", "f-other", "f-start-time", "f-end-time", "f-platform", "f-date"].forEach(function (id) {
+    ["f-end-odo", "f-orders", "f-income", "f-other", "f-end-time"].forEach(function (id) {
       document.getElementById(id).addEventListener("input", function () {
-        if (id === "f-start-odo" || id === "f-end-odo") updateFuelSuggestion();
+        if (id === "f-end-odo") updateFuelSuggestion();
         renderHomePreview();
       });
     });
     document.getElementById("f-fuel").addEventListener("input", function () { fuelTouched = true; renderHomePreview(); });
 
+    document.getElementById("btn-start-shift").addEventListener("click", async function () {
+      var startOdo = document.getElementById("st-start-odo").value;
+      if (!startOdo) return;
+      var draft = {
+        date: document.getElementById("st-date").value || todayISO(),
+        platformId: document.getElementById("st-platform").value,
+        startTime: document.getElementById("st-start-time").value || new Date().toTimeString().slice(0, 5),
+        startOdo: startOdo
+      };
+      var btn = document.getElementById("btn-start-shift");
+      btn.disabled = true;
+      var ok = await csSetItemRetry(ACTIVE_KEY, JSON.stringify(draft));
+      btn.disabled = false;
+      if (ok) {
+        activeShift = draft;
+        fuelTouched = false;
+        renderHomeState();
+      } else {
+        var el = document.getElementById("flash-start");
+        el.style.color = "var(--red)";
+        el.textContent = "Не збереглось — спробуй ще раз";
+      }
+    });
+
+    document.getElementById("btn-cancel-shift").addEventListener("click", async function () {
+      await csRemoveItem(ACTIVE_KEY);
+      activeShift = null;
+      document.getElementById("st-date").value = todayISO();
+      renderHomeState();
+    });
+
     document.getElementById("btn-save-shift").addEventListener("click", async function () {
       var form = getFormValues();
+      if (!form) return;
       var distance = Math.max(0, (parseFloat(form.endOdo) || 0) - (parseFloat(form.startOdo) || 0));
       if (distance <= 0 || !form.income) return;
       var platform = platformById(form.platformId);
@@ -736,13 +847,28 @@
         startOdo: parseFloat(form.startOdo) || 0, endOdo: parseFloat(form.endOdo) || 0,
         fuelPrice: settings.fuelPrice, depreciationRate: settings.depreciationRate
       }, computed);
-      await addShift(record);
-      ["f-start-odo", "f-end-odo", "f-orders", "f-income", "f-fuel", "f-other", "f-start-time", "f-end-time"].forEach(function (id) { document.getElementById(id).value = ""; });
-      document.getElementById("f-date").value = todayISO();
-      fuelTouched = false;
-      renderAll();
-      flash("flash-home");
-      if (tg && tg.HapticFeedback) { try { tg.HapticFeedback.notificationOccurred("success"); } catch (e) {} }
+      var saveBtn = document.getElementById("btn-save-shift");
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Зберігаю…";
+      var ok = await addShift(record);
+      saveBtn.textContent = "Завершити зміну";
+      if (ok) {
+        await csRemoveItem(ACTIVE_KEY);
+        activeShift = null;
+        ["f-end-odo", "f-orders", "f-income", "f-fuel", "f-other", "f-end-time"].forEach(function (id) { document.getElementById(id).value = ""; });
+        document.getElementById("st-date").value = todayISO();
+        fuelTouched = false;
+        renderHomeState();
+        renderAll();
+        flash("flash-home");
+        if (tg && tg.HapticFeedback) { try { tg.HapticFeedback.notificationOccurred("success"); } catch (e) {} }
+      } else {
+        saveBtn.disabled = false;
+        var el = document.getElementById("flash-home");
+        el.style.color = "var(--red)";
+        el.textContent = "Не збереглось — перевір з'єднання і натисни ще раз";
+        if (tg && tg.HapticFeedback) { try { tg.HapticFeedback.notificationOccurred("error"); } catch (e) {} }
+      }
     });
 
     document.querySelectorAll(".tab").forEach(function (btn) {
